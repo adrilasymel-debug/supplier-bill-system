@@ -8,9 +8,10 @@ except ImportError:
     st = None
 
 
-# Google Gemini free tier (as of writing: generous free daily quota,
-# and native structured JSON output that matches INVOICE_SCHEMA below).
-MODEL = "gemini-2.0-flash"
+# Google Gemini free tier. Using the "latest" alias instead of a
+# dated model name so this doesn't break again when Google retires
+# a specific model version (they do this every few months).
+MODEL = "gemini-flash-latest"
 
 
 def _get_secret(key):
@@ -296,9 +297,10 @@ def validate_invoice(data):
 
 def extract_invoice(ocr_text):
 
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 
-    genai.configure(
+    client = genai.Client(
         api_key=_get_secret("GEMINI_API_KEY")
     )
 
@@ -407,16 +409,15 @@ OCR TEXT:
 --------------------------------------------------
 """
 
-    model = genai.GenerativeModel(MODEL)
-
     try:
 
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
                 temperature=0,
                 response_mime_type="application/json",
-                response_schema=INVOICE_SCHEMA
+                response_json_schema=INVOICE_SCHEMA
             )
         )
 
