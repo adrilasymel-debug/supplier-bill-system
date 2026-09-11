@@ -1,23 +1,26 @@
 import streamlit as st
 from pathlib import Path
-from datetime import datetime
 import re
 
 from auth import login_user
 from database import get_connection
-from ocr import extract_text_from_image
+from ocr import extract_text
 from ai_extractor import extract_invoice
-from storage import upload_invoice_image
+from styles import load_css, render_status
 
 
 st.set_page_config(
     page_title="Supplier Bill Management System",
-    page_icon="📋",
+    page_icon=":material/receipt_long:",
     layout="wide"
 )
 
+load_css()
+
 
 BASE_DIR = Path(__file__).parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -54,38 +57,50 @@ def safe_filename(value):
 
 def login_page():
 
-    st.title("Supplier Bill Management System")
-    st.subheader("Login")
+    left, center, right = st.columns([1, 1.2, 1])
 
-    username = st.text_input("Username")
+    with center:
 
-    password = st.text_input(
-        "Password",
-        type="password"
-    )
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
 
-    if st.button(
-        "Login",
-        type="primary"
-    ):
-
-        user = login_user(
-            username,
-            password
+        st.markdown("# Supplier Bill Management")
+        st.markdown(
+            '<p class="login-subtitle">Sign in to continue</p>',
+            unsafe_allow_html=True
         )
 
-        if user:
+        username = st.text_input("Username")
 
-            st.session_state["logged_in"] = True
-            st.session_state["user"] = user
+        password = st.text_input(
+            "Password",
+            type="password"
+        )
 
-            st.rerun()
+        if st.button(
+            "Login",
+            type="primary",
+            use_container_width=True
+        ):
 
-        else:
-
-            st.error(
-                "Invalid username or password."
+            user = login_user(
+                username,
+                password
             )
+
+            if user:
+
+                st.session_state["logged_in"] = True
+                st.session_state["user"] = user
+
+                st.rerun()
+
+            else:
+
+                st.error(
+                    "Invalid username or password."
+                )
+
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
 # ============================================================
@@ -100,7 +115,7 @@ def display_ai_extraction(extracted):
 
     st.divider()
 
-    st.subheader("🤖 AI-Extracted Information")
+    st.subheader("Extracted Information")
 
     st.info(
         "Please check the information carefully. "
@@ -343,7 +358,7 @@ def display_ai_extraction(extracted):
     # --------------------------------------------------------
 
     if st.button(
-        "💾 Save Invoice",
+        "Save Invoice",
         type="primary",
         key="save_ai_invoice"
     ):
@@ -416,7 +431,6 @@ def display_ai_extraction(extracted):
                         tin
                     )
                     VALUES (?, ?, ?, ?)
-                    RETURNING supplier_id
                     """,
                     (
                         supplier_name.strip(),
@@ -426,10 +440,10 @@ def display_ai_extraction(extracted):
                     )
                 )
 
-                supplier_id = cursor.fetchone()["supplier_id"]
+                supplier_id = cursor.lastrowid
 
             # ------------------------------------------------
-            # SAVE IMAGE (Supabase Storage - cloud, not local disk)
+            # SAVE IMAGE
             # ------------------------------------------------
 
             uploaded_file = st.session_state[
@@ -451,22 +465,20 @@ def display_ai_extraction(extracted):
             file_name = (
                 f"invoice_"
                 f"{safe_invoice_number}_"
-                f"{safe_invoice_date}_"
-                f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+                f"{safe_invoice_date}"
                 f"{file_extension}"
             )
 
-            content_type = (
-                "image/png"
-                if file_extension == ".png"
-                else "image/jpeg"
-            )
+            file_path = UPLOAD_DIR / file_name
 
-            image_url = upload_invoice_image(
-                file_name,
-                uploaded_file.getvalue(),
-                content_type
-            )
+            with open(
+                file_path,
+                "wb"
+            ) as file:
+
+                file.write(
+                    uploaded_file.getbuffer()
+                )
 
             # ------------------------------------------------
             # SAVE INVOICE
@@ -489,7 +501,6 @@ def display_ai_extraction(extracted):
                     verification_status
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                RETURNING invoice_id
                 """,
                 (
                     supplier_id,
@@ -501,13 +512,13 @@ def display_ai_extraction(extracted):
                     total_amount,
                     0,
                     "Unpaid",
-                    image_url,
+                    str(file_path),
                     st.session_state["user"]["user_id"],
                     "Pending"
                 )
             )
 
-            invoice_id = cursor.fetchone()["invoice_id"]
+            invoice_id = cursor.lastrowid
 
             # ------------------------------------------------
             # SAVE ITEMS
@@ -639,9 +650,23 @@ def upload_invoice_page():
     # --------------------------------------------------------
 
     if st.button(
-        "🔍 Read Invoice",
+        "Read Invoice",
         type="primary"
     ):
+
+        temp_path = (
+            UPLOAD_DIR
+            / "ocr_temp_image.jpg"
+        )
+
+        with open(
+            temp_path,
+            "wb"
+        ) as file:
+
+            file.write(
+                uploaded_file.getbuffer()
+            )
 
         with st.spinner(
             "Reading invoice with OCR..."
@@ -649,8 +674,8 @@ def upload_invoice_page():
 
             try:
 
-                extracted_text = extract_text_from_image(
-                    uploaded_file
+                extracted_text = extract_text(
+                    temp_path
                 )
 
                 st.session_state[
@@ -672,7 +697,7 @@ def upload_invoice_page():
         st.divider()
 
         st.subheader(
-            "📄 OCR Result"
+            "OCR Result"
         )
 
         extracted_text = st.text_area(
@@ -682,7 +707,7 @@ def upload_invoice_page():
         )
 
         if st.button(
-            "🤖 Extract Invoice Information with AI",
+            "Extract Invoice Information with AI",
             type="primary"
         ):
 
@@ -784,21 +809,17 @@ def verify_invoice_page():
 
                 st.write("### Invoice Photo")
 
-                if invoice["image_path"]:
+                image_path = Path(
+                    invoice["image_path"]
+                )
 
-                    try:
+                if image_path.exists():
 
-                        st.image(
-                            invoice["image_path"],
-                            caption="Uploaded invoice",
-                            width="stretch"
-                        )
-
-                    except Exception:
-
-                        st.error(
-                            "Invoice image could not be loaded."
-                        )
+                    st.image(
+                        str(image_path),
+                        caption="Uploaded invoice",
+                        width="stretch"
+                    )
 
                 else:
 
@@ -838,7 +859,7 @@ def verify_invoice_page():
                 )
 
                 if st.button(
-                    "✅ Verify Invoice",
+                    "Verify Invoice",
                     key=f"verify_{invoice['invoice_id']}",
                     type="primary"
                 ):
@@ -889,7 +910,7 @@ def show_boss_invoice_detail(invoice_id):
     st.divider()
 
     if st.button(
-        "← Back",
+        "Back",
         key=f"back_invoice_{invoice_id}"
     ):
 
@@ -1057,21 +1078,17 @@ def show_boss_invoice_detail(invoice_id):
 
         st.write("### Original Invoice")
 
-        if invoice["image_path"]:
+        image_path = Path(
+            invoice["image_path"]
+        )
 
-            try:
+        if image_path.exists():
 
-                st.image(
-                    invoice["image_path"],
-                    caption="Original uploaded invoice",
-                    width="stretch"
-                )
-
-            except Exception:
-
-                st.error(
-                    "Original invoice image could not be loaded."
-                )
+            st.image(
+                str(image_path),
+                caption="Original uploaded invoice",
+                width="stretch"
+            )
 
         else:
 
@@ -1155,7 +1172,7 @@ def show_boss_invoice_detail(invoice_id):
 
 def boss_invoice_management():
 
-    st.title("📋 Invoice Management")
+    st.title("Invoice Management")
 
     connection = get_connection()
 
@@ -1264,8 +1281,8 @@ def boss_invoice_management():
 
         query += """
             AND (
-                invoices.invoice_number ILIKE ?
-                OR suppliers.name ILIKE ?
+                invoices.invoice_number LIKE ?
+                OR suppliers.name LIKE ?
             )
         """
 
@@ -1455,11 +1472,11 @@ def boss_invoice_management():
 
                 if invoice["verification_status"] == "Verified":
 
-                    st.caption("✓ Verified")
+                    render_status("Verified", "verified")
 
                 else:
 
-                    st.caption("⚠ Pending verification")
+                    render_status("Pending verification", "pending")
 
             with col4:
 
@@ -1493,7 +1510,7 @@ def boss_invoice_management():
 
 def boss_supplier_management():
 
-    st.title("🏢 Supplier Management")
+    st.title("Supplier Management")
 
     connection = get_connection()
 
@@ -1734,7 +1751,7 @@ def show_supplier_detail(supplier_id):
     st.divider()
 
     if st.button(
-        "← Back to Supplier List",
+        "Back to Supplier List",
         key="back_supplier_list"
     ):
 
@@ -1950,11 +1967,11 @@ def show_supplier_detail(supplier_id):
 
                 if invoice["verification_status"] == "Verified":
 
-                    st.caption("✓ Verified")
+                    render_status("Verified", "verified")
 
                 else:
 
-                    st.caption("⚠ Pending verification")
+                    render_status("Pending verification", "pending")
 
             with col4:
 
@@ -1980,7 +1997,7 @@ def show_supplier_detail(supplier_id):
 
 def boss_payment_management():
 
-    st.title("💰 Payment Management")
+    st.title("Payment Management")
 
     connection = get_connection()
 
@@ -2180,13 +2197,13 @@ def boss_payment_management():
     if invoice["verification_status"] == "Verified":
 
         st.success(
-            "✓ Invoice verified"
+            "Invoice verified"
         )
 
     else:
 
         st.warning(
-            "⚠ This invoice is still pending verification."
+            "This invoice is still pending verification."
         )
 
     st.divider()
@@ -2264,7 +2281,7 @@ def boss_payment_management():
         )
 
         if st.button(
-            "💵 Record Payment",
+            "Record Payment",
             type="primary",
             key=f"record_payment_{selected_invoice_id}"
         ):
@@ -2459,7 +2476,7 @@ def boss_payment_management():
 
 def boss_reports():
 
-    st.title("📊 Reports & Export")
+    st.title("Reports & Export")
 
     connection = get_connection()
 
@@ -3005,7 +3022,7 @@ def boss_reports():
     with col1:
 
         st.download_button(
-            "📥 Download Invoice Report",
+            "Download Invoice Report",
             data=invoice_csv.getvalue(),
             file_name="invoice_report.csv",
             mime="text/csv",
@@ -3015,7 +3032,7 @@ def boss_reports():
     with col2:
 
         st.download_button(
-            "📥 Download Payment Report",
+            "Download Payment Report",
             data=payment_csv.getvalue(),
             file_name="payment_report.csv",
             mime="text/csv",
@@ -3025,7 +3042,7 @@ def boss_reports():
     with col3:
 
         st.download_button(
-            "📥 Download Supplier Report",
+            "Download Supplier Report",
             data=supplier_csv.getvalue(),
             file_name="supplier_report.csv",
             mime="text/csv",
@@ -3191,20 +3208,11 @@ def boss_dashboard():
             "System Functions"
         )
 
-        st.write(
-            "📋 Invoice Management"
-        )
-
-        st.write(
-            "🏢 Supplier Management"
-        )
-
-        st.write(
-            "💰 Payment Management"
-        )
-
-        st.write(
-            "📊 Reports & Export"
+        st.markdown(
+            "- Invoice Management\n"
+            "- Supplier Management\n"
+            "- Payment Management\n"
+            "- Reports & Export"
         )
 
     # --------------------------------------------------------
