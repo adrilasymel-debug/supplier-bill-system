@@ -32,7 +32,7 @@ def load_css():
             --text-muted: #5B6462;
             --sidebar-bg: #FFD400;
             --sidebar-bg-hover: #F5C400;
-            --login-bg: #FFF8E1;
+            --login-bg: #FFD400;
         }
 
         html, body, [class*="css"], .stApp, .stMarkdown, p, span, div, label {
