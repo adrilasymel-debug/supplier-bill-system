@@ -30,6 +30,9 @@ def load_css():
             --stamp-rust: #9C3B2E;
             --line: #D9D6CC;
             --text-muted: #5B6462;
+            --sidebar-bg: #FFD400;
+            --sidebar-bg-hover: #F5C400;
+            --login-bg: #FFF8E1;
         }
 
         html, body, [class*="css"], .stApp, .stMarkdown, p, span, div, label {
@@ -41,16 +44,45 @@ def load_css():
             color: var(--ink);
         }
 
+        /* Distinct background just for the login screen, detected by
+           the presence of the login card container on that page. */
+        .stApp:has(.st-key-login_card) {
+            background-color: var(--login-bg);
+        }
+
         /* ---------------------------------------------------- */
         /* Hide default Streamlit chrome for a fully custom look */
         /* ---------------------------------------------------- */
-        #MainMenu, header, footer,
+        #MainMenu, footer,
         div[data-testid="stToolbar"],
         div[data-testid="stDecoration"],
         div[data-testid="stStatusWidget"] {
             visibility: hidden;
             height: 0;
             position: fixed;
+        }
+
+        /* Keep the header itself (it holds the sidebar open/close
+           control) but blend it into the page instead of hiding it. */
+        header[data-testid="stHeader"] {
+            background-color: transparent;
+            box-shadow: none;
+        }
+
+        /* Force-show the sidebar toggle regardless of which testid
+           this Streamlit version uses for it. */
+        [data-testid="collapsedControl"],
+        [data-testid="stSidebarCollapseButton"],
+        [data-testid="stSidebarCollapsedControl"],
+        [data-testid="stExpandSidebarButton"],
+        [data-testid="stSidebarNavCollapseIcon"],
+        header[data-testid="stHeader"] button {
+            visibility: visible !important;
+            display: flex !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
+            position: relative !important;
+            z-index: 999999 !important;
         }
 
         /* ---------------------------------------------------- */
@@ -75,8 +107,12 @@ def load_css():
         /* Sidebar -> nav rail                                   */
         /* ---------------------------------------------------- */
         [data-testid="stSidebar"] {
-            background-color: var(--surface);
+            background-color: var(--sidebar-bg);
             border-right: 1px solid var(--line);
+        }
+
+        [data-testid="stSidebar"] * {
+            color: var(--ink);
         }
 
         [data-testid="stSidebar"] [role="radiogroup"] label {
@@ -86,8 +122,8 @@ def load_css():
         }
 
         [data-testid="stSidebar"] [role="radiogroup"] label:hover {
-            background-color: var(--paper);
-            border-left-color: var(--line);
+            background-color: var(--sidebar-bg-hover);
+            border-left-color: var(--ledger-green-dark);
         }
 
         /* ---------------------------------------------------- */
@@ -209,16 +245,19 @@ def load_css():
 
         /* ---------------------------------------------------- */
         /* Login card                                            */
+        /* (scoped to the container(key="login_card") wrapper    */
+        /* only, so it doesn't affect other bordered containers  */
+        /* used elsewhere in the app, e.g. invoice cards)         */
         /* ---------------------------------------------------- */
-        .login-card {
+        .st-key-login_card {
             background-color: var(--surface);
-            border: 1px solid var(--line);
+            border: 1px solid var(--line) !important;
             border-radius: 6px;
             padding: 2.5rem 2.5rem 1.75rem 2.5rem;
             margin-top: 2rem;
         }
 
-        .login-card h1 {
+        .st-key-login_card h1 {
             border-bottom: none;
             padding-bottom: 0;
             margin-bottom: 0.25rem;

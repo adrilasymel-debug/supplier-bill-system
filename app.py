@@ -61,46 +61,44 @@ def login_page():
 
     with center:
 
-        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        with st.container(key="login_card", border=True):
 
-        st.markdown("# Supplier Bill Management")
-        st.markdown(
-            '<p class="login-subtitle">Sign in to continue</p>',
-            unsafe_allow_html=True
-        )
-
-        username = st.text_input("Username")
-
-        password = st.text_input(
-            "Password",
-            type="password"
-        )
-
-        if st.button(
-            "Login",
-            type="primary",
-            use_container_width=True
-        ):
-
-            user = login_user(
-                username,
-                password
+            st.markdown("# Supplier Bill Management")
+            st.markdown(
+                '<p class="login-subtitle">Sign in to continue</p>',
+                unsafe_allow_html=True
             )
 
-            if user:
+            username = st.text_input("Username")
 
-                st.session_state["logged_in"] = True
-                st.session_state["user"] = user
+            password = st.text_input(
+                "Password",
+                type="password"
+            )
 
-                st.rerun()
+            if st.button(
+                "Login",
+                type="primary",
+                use_container_width=True
+            ):
 
-            else:
-
-                st.error(
-                    "Invalid username or password."
+                user = login_user(
+                    username,
+                    password
                 )
 
-        st.markdown('</div>', unsafe_allow_html=True)
+                if user:
+
+                    st.session_state["logged_in"] = True
+                    st.session_state["user"] = user
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Invalid username or password."
+                    )
 
 
 # ============================================================
