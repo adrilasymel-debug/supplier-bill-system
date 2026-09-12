@@ -1,14 +1,21 @@
+import platform
 import pytesseract
 from PIL import Image
 from pathlib import Path
 
 
-# On Streamlit Community Cloud, packages.txt installs tesseract-ocr
-# via apt, and it's already on the system PATH - no manual path needed.
-# For local Windows dev, uncomment and set this to your install path:
-# pytesseract.pytesseract.tesseract_cmd = (
-#     r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-# )
+# On Streamlit Community Cloud (Linux), packages.txt installs
+# tesseract-ocr via apt, and it's already on the system PATH - no
+# manual path needed there. On Windows, tesseract isn't normally on
+# PATH after installing, so point pytesseract straight at the exe.
+if platform.system() == "Windows":
+
+    WINDOWS_TESSERACT_PATH = (
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    )
+
+    if Path(WINDOWS_TESSERACT_PATH).exists():
+        pytesseract.pytesseract.tesseract_cmd = WINDOWS_TESSERACT_PATH
 
 
 def extract_text(image_path):

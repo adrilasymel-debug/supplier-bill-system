@@ -425,11 +425,17 @@ OCR TEXT:
 
         return validate_invoice(data)
 
-    except Exception:
+    except Exception as error:
 
         # Covers API errors (auth, quota, network) as well as
         # malformed JSON coming back from the model - fail safe
-        # to an empty invoice the user can fill in by hand.
+        # to an empty invoice the user can fill in by hand, but
+        # surface the real reason instead of failing silently.
+        if st is not None:
+            st.error(f"AI extraction failed: {error}")
+        else:
+            print(f"AI extraction failed: {error}")
+
         return empty_invoice()
 
 

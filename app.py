@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 
 from auth import login_user
-from database import get_connection
+from database import get_connection, create_tables, upgrade_existing_database
 from ocr import extract_text
 from ai_extractor import extract_invoice
 from styles import load_css, render_status
@@ -16,6 +16,25 @@ st.set_page_config(
 )
 
 load_css()
+
+
+@st.cache_resource
+def _initialize_database():
+    """
+    Creates any missing tables/columns on first run. Cached so it only
+    executes once per running app (not on every rerun/interaction).
+    Safe to call repeatedly: create_tables() uses CREATE TABLE IF NOT
+    EXISTS, and upgrade_existing_database() checks for each column
+    before adding it.
+    """
+
+    create_tables()
+    upgrade_existing_database()
+
+    return True
+
+
+_initialize_database()
 
 
 BASE_DIR = Path(__file__).parent
@@ -770,6 +789,7 @@ def verify_invoice_page():
                 ON invoices.supplier_id =
                    suppliers.supplier_id
             WHERE invoices.verification_status = 'Pending'
+                AND invoices.is_deleted = 0
             ORDER BY invoices.created_at DESC
             """
         ).fetchall()
@@ -940,6 +960,7 @@ def show_boss_invoice_detail(invoice_id):
                 ON invoices.uploaded_by =
                    users.user_id
             WHERE invoices.invoice_id = ?
+                AND invoices.is_deleted = 0
             """,
             (invoice_id,)
         ).fetchone()
@@ -1163,6 +1184,93 @@ def show_boss_invoice_detail(invoice_id):
             f"RM {invoice['total_amount']:,.2f}"
         )
 
+    st.divider()
+
+    with st.expander("Danger Zone"):
+
+        st.write(
+            "Deleting an invoice removes it from every list, report, "
+            "and dashboard total. The record itself is kept, so this "
+            "can be reversed later if needed, but not from within "
+            "the app."
+        )
+
+        confirm_key = f"confirm_delete_{invoice_id}"
+
+        if not st.session_state.get(confirm_key, False):
+
+            if st.button(
+                "Delete Invoice",
+                key=f"delete_invoice_{invoice_id}"
+            ):
+
+                st.session_state[confirm_key] = True
+                st.rerun()
+
+        else:
+
+            st.warning(
+                f"Delete invoice "
+                f"#{invoice['invoice_number'] or 'Unknown'}? "
+                "This will hide it everywhere in the system."
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+
+                if st.button(
+                    "Yes, delete this invoice",
+                    type="primary",
+                    key=f"confirm_delete_yes_{invoice_id}"
+                ):
+
+                    connection = get_connection()
+
+                    try:
+
+                        connection.execute(
+                            """
+                            UPDATE invoices
+                            SET is_deleted = 1
+                            WHERE invoice_id = ?
+                            """,
+                            (invoice_id,)
+                        )
+
+                        connection.commit()
+
+                    finally:
+
+                        connection.close()
+
+                    st.session_state[
+                        "invoice_deleted_message"
+                    ] = (
+                        f"Invoice "
+                        f"#{invoice['invoice_number'] or 'Unknown'} "
+                        f"deleted."
+                    )
+
+                    st.session_state.pop(confirm_key, None)
+
+                    st.session_state.pop(
+                        "selected_invoice_id",
+                        None
+                    )
+
+                    st.rerun()
+
+            with col2:
+
+                if st.button(
+                    "Cancel",
+                    key=f"confirm_delete_no_{invoice_id}"
+                ):
+
+                    st.session_state.pop(confirm_key, None)
+                    st.rerun()
+
 
 # ============================================================
 # BOSS: INVOICE MANAGEMENT
@@ -1171,6 +1279,12 @@ def show_boss_invoice_detail(invoice_id):
 def boss_invoice_management():
 
     st.title("Invoice Management")
+
+    if st.session_state.get("invoice_deleted_message"):
+
+        st.success(
+            st.session_state.pop("invoice_deleted_message")
+        )
 
     connection = get_connection()
 
@@ -1271,6 +1385,7 @@ def boss_invoice_management():
             ON invoices.supplier_id =
                suppliers.supplier_id
         WHERE 1 = 1
+            AND invoices.is_deleted = 0
     """
 
     parameters = []
@@ -1549,6 +1664,7 @@ def boss_supplier_management():
             LEFT JOIN invoices
                 ON suppliers.supplier_id =
                    invoices.supplier_id
+                AND invoices.is_deleted = 0
 
             WHERE suppliers.active = 1
 
@@ -1790,6 +1906,7 @@ def show_supplier_detail(supplier_id):
                 verification_status
             FROM invoices
             WHERE supplier_id = ?
+                AND is_deleted = 0
             ORDER BY invoice_date DESC,
                      invoice_id DESC
             """,
@@ -2016,6 +2133,7 @@ def boss_payment_management():
             JOIN suppliers
                 ON invoices.supplier_id =
                    suppliers.supplier_id
+            WHERE invoices.is_deleted = 0
             ORDER BY invoices.invoice_date DESC,
                      invoices.invoice_id DESC
             """
@@ -2135,6 +2253,7 @@ def boss_payment_management():
                 ON invoices.supplier_id =
                    suppliers.supplier_id
             WHERE invoices.invoice_id = ?
+                AND invoices.is_deleted = 0
             """,
             (selected_invoice_id,)
         ).fetchone()
@@ -2495,6 +2614,7 @@ def boss_reports():
                     0
                 ) AS total_outstanding
             FROM invoices
+            WHERE is_deleted = 0
             """
         ).fetchone()
 
@@ -2524,6 +2644,7 @@ def boss_reports():
             JOIN suppliers
                 ON invoices.supplier_id =
                    suppliers.supplier_id
+            WHERE invoices.is_deleted = 0
             ORDER BY invoices.invoice_date DESC,
                      invoices.invoice_id DESC
             """
@@ -2553,6 +2674,7 @@ def boss_reports():
             LEFT JOIN users
                 ON payments.recorded_by =
                    users.user_id
+            WHERE invoices.is_deleted = 0
             ORDER BY payments.payment_date DESC,
                      payments.payment_id DESC
             """
@@ -2593,6 +2715,7 @@ def boss_reports():
             LEFT JOIN invoices
                 ON suppliers.supplier_id =
                    invoices.supplier_id
+                AND invoices.is_deleted = 0
 
             WHERE suppliers.active = 1
 
@@ -3144,6 +3267,7 @@ def boss_dashboard():
                 """
                 SELECT COUNT(*) AS count
                 FROM invoices
+                WHERE is_deleted = 0
                 """
             ).fetchone()["count"]
 
@@ -3152,6 +3276,7 @@ def boss_dashboard():
                 SELECT COUNT(*) AS count
                 FROM invoices
                 WHERE status = 'Unpaid'
+                    AND is_deleted = 0
                 """
             ).fetchone()["count"]
 
@@ -3163,6 +3288,7 @@ def boss_dashboard():
                 ) AS total
                 FROM invoices
                 WHERE status != 'Paid'
+                    AND is_deleted = 0
                 """
             ).fetchone()["total"]
 
