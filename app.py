@@ -1,10 +1,11 @@
 import streamlit as st
 from pathlib import Path
 import re
+from PIL import Image
 
 from auth import login_user
-from database import get_connection, create_tables, upgrade_existing_database
-from ocr import extract_text
+from database import get_connection
+from ocr import extract_text, pdf_to_images, extract_text_from_pages
 from ai_extractor import extract_invoice
 from styles import load_css, render_status
 
@@ -16,25 +17,6 @@ st.set_page_config(
 )
 
 load_css()
-
-
-@st.cache_resource
-def _initialize_database():
-    """
-    Creates any missing tables/columns on first run. Cached so it only
-    executes once per running app (not on every rerun/interaction).
-    Safe to call repeatedly: create_tables() uses CREATE TABLE IF NOT
-    EXISTS, and upgrade_existing_database() checks for each column
-    before adding it.
-    """
-
-    create_tables()
-    upgrade_existing_database()
-
-    return True
-
-
-_initialize_database()
 
 
 BASE_DIR = Path(__file__).parent
@@ -68,6 +50,47 @@ def safe_filename(value):
         value = "unknown"
 
     return value
+
+
+# ============================================================
+# INVOICE IMAGE PAGES
+# ============================================================
+
+def get_invoice_image_paths(invoice_id, fallback_path):
+    """
+    Returns an ordered list of image paths to display for an
+    invoice. Multi-page invoices (uploaded as PDFs) have rows in
+    invoice_pages; invoices uploaded before this feature existed
+    don't, so those fall back to the single original image_path.
+    Opens and closes its own connection so it's safe to call from
+    anywhere, regardless of the caller's own connection lifecycle.
+    """
+
+    connection = get_connection()
+
+    try:
+
+        pages = connection.execute(
+            """
+            SELECT image_path
+            FROM invoice_pages
+            WHERE invoice_id = ?
+            ORDER BY page_number
+            """,
+            (invoice_id,)
+        ).fetchall()
+
+    finally:
+
+        connection.close()
+
+    if pages:
+        return [row["image_path"] for row in pages]
+
+    if fallback_path:
+        return [fallback_path]
+
+    return []
 
 
 # ============================================================
@@ -460,16 +483,12 @@ def display_ai_extraction(extracted):
                 supplier_id = cursor.lastrowid
 
             # ------------------------------------------------
-            # SAVE IMAGE
+            # SAVE IMAGE(S)
             # ------------------------------------------------
 
-            uploaded_file = st.session_state[
-                "uploaded_invoice_file"
+            page_images = st.session_state[
+                "invoice_page_images"
             ]
-
-            file_extension = Path(
-                uploaded_file.name
-            ).suffix.lower()
 
             safe_invoice_number = safe_filename(
                 invoice_number
@@ -479,23 +498,42 @@ def display_ai_extraction(extracted):
                 invoice_date
             )
 
-            file_name = (
-                f"invoice_"
-                f"{safe_invoice_number}_"
-                f"{safe_invoice_date}"
-                f"{file_extension}"
-            )
+            page_image_paths = []
 
-            file_path = UPLOAD_DIR / file_name
+            for page_number, page_image in enumerate(
+                page_images,
+                start=1
+            ):
 
-            with open(
-                file_path,
-                "wb"
-            ) as file:
+                if len(page_images) > 1:
 
-                file.write(
-                    uploaded_file.getbuffer()
+                    file_name = (
+                        f"invoice_"
+                        f"{safe_invoice_number}_"
+                        f"{safe_invoice_date}_"
+                        f"page{page_number}.jpg"
+                    )
+
+                else:
+
+                    file_name = (
+                        f"invoice_"
+                        f"{safe_invoice_number}_"
+                        f"{safe_invoice_date}.jpg"
+                    )
+
+                file_path = UPLOAD_DIR / file_name
+
+                page_image.convert("RGB").save(
+                    file_path,
+                    "JPEG"
                 )
+
+                page_image_paths.append(
+                    str(file_path)
+                )
+
+            file_path = Path(page_image_paths[0])
 
             # ------------------------------------------------
             # SAVE INVOICE
@@ -536,6 +574,31 @@ def display_ai_extraction(extracted):
             )
 
             invoice_id = cursor.lastrowid
+
+            # ------------------------------------------------
+            # SAVE INVOICE PAGES
+            # ------------------------------------------------
+
+            for page_number, page_path in enumerate(
+                page_image_paths,
+                start=1
+            ):
+
+                connection.execute(
+                    """
+                    INSERT INTO invoice_pages (
+                        invoice_id,
+                        page_number,
+                        image_path
+                    )
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        invoice_id,
+                        page_number,
+                        page_path
+                    )
+                )
 
             # ------------------------------------------------
             # SAVE ITEMS
@@ -580,7 +643,8 @@ def display_ai_extraction(extracted):
             for key in [
                 "ocr_text",
                 "ai_invoice",
-                "uploaded_invoice_file"
+                "uploaded_invoice_file",
+                "invoice_page_images"
             ]:
 
                 if key in st.session_state:
@@ -618,7 +682,8 @@ def upload_invoice_page():
         type=[
             "jpg",
             "jpeg",
-            "png"
+            "png",
+            "pdf"
         ]
     )
 
@@ -642,7 +707,8 @@ def upload_invoice_page():
 
         for key in [
             "ocr_text",
-            "ai_invoice"
+            "ai_invoice",
+            "invoice_page_images"
         ]:
 
             if key in st.session_state:
@@ -652,15 +718,69 @@ def upload_invoice_page():
         "uploaded_invoice_file"
     ] = uploaded_file
 
+    # --------------------------------------------------------
+    # BUILD PAGE IMAGES
+    # (a plain photo is treated as a single "page"; a PDF is
+    # rendered into one image per page)
+    # --------------------------------------------------------
+
+    if "invoice_page_images" not in st.session_state:
+
+        is_pdf = (
+            Path(uploaded_file.name).suffix.lower() == ".pdf"
+        )
+
+        if is_pdf:
+
+            try:
+
+                with st.spinner("Reading PDF pages..."):
+
+                    st.session_state[
+                        "invoice_page_images"
+                    ] = pdf_to_images(
+                        uploaded_file.getvalue()
+                    )
+
+            except Exception as error:
+
+                st.error(
+                    f"Could not read PDF: {error}"
+                )
+
+                return
+
+        else:
+
+            st.session_state[
+                "invoice_page_images"
+            ] = [Image.open(uploaded_file)]
+
+    page_images = st.session_state["invoice_page_images"]
+
     st.divider()
 
     st.subheader("Invoice Preview")
 
-    st.image(
-        uploaded_file,
-        caption="Uploaded invoice",
-        width="stretch"
-    )
+    if len(page_images) > 1:
+
+        st.caption(
+            f"{len(page_images)} pages detected."
+        )
+
+    for index, page_image in enumerate(page_images, start=1):
+
+        caption = (
+            f"Page {index} of {len(page_images)}"
+            if len(page_images) > 1
+            else "Uploaded invoice"
+        )
+
+        st.image(
+            page_image,
+            caption=caption,
+            width="stretch"
+        )
 
     # --------------------------------------------------------
     # OCR
@@ -671,28 +791,14 @@ def upload_invoice_page():
         type="primary"
     ):
 
-        temp_path = (
-            UPLOAD_DIR
-            / "ocr_temp_image.jpg"
-        )
-
-        with open(
-            temp_path,
-            "wb"
-        ) as file:
-
-            file.write(
-                uploaded_file.getbuffer()
-            )
-
         with st.spinner(
             "Reading invoice with OCR..."
         ):
 
             try:
 
-                extracted_text = extract_text(
-                    temp_path
+                extracted_text = extract_text_from_pages(
+                    page_images
                 )
 
                 st.session_state[
@@ -789,7 +895,6 @@ def verify_invoice_page():
                 ON invoices.supplier_id =
                    suppliers.supplier_id
             WHERE invoices.verification_status = 'Pending'
-                AND invoices.is_deleted = 0
             ORDER BY invoices.created_at DESC
             """
         ).fetchall()
@@ -827,23 +932,43 @@ def verify_invoice_page():
 
                 st.write("### Invoice Photo")
 
-                image_path = Path(
+                image_paths = get_invoice_image_paths(
+                    invoice["invoice_id"],
                     invoice["image_path"]
                 )
 
-                if image_path.exists():
-
-                    st.image(
-                        str(image_path),
-                        caption="Uploaded invoice",
-                        width="stretch"
-                    )
-
-                else:
+                if not image_paths:
 
                     st.error(
                         "Invoice image could not be found."
                     )
+
+                for index, path_str in enumerate(
+                    image_paths,
+                    start=1
+                ):
+
+                    image_path = Path(path_str)
+
+                    if image_path.exists():
+
+                        caption = (
+                            f"Page {index} of {len(image_paths)}"
+                            if len(image_paths) > 1
+                            else "Uploaded invoice"
+                        )
+
+                        st.image(
+                            str(image_path),
+                            caption=caption,
+                            width="stretch"
+                        )
+
+                    else:
+
+                        st.error(
+                            f"Page {index} could not be found."
+                        )
 
             with col2:
 
@@ -960,7 +1085,6 @@ def show_boss_invoice_detail(invoice_id):
                 ON invoices.uploaded_by =
                    users.user_id
             WHERE invoices.invoice_id = ?
-                AND invoices.is_deleted = 0
             """,
             (invoice_id,)
         ).fetchone()
@@ -1097,23 +1221,40 @@ def show_boss_invoice_detail(invoice_id):
 
         st.write("### Original Invoice")
 
-        image_path = Path(
+        image_paths = get_invoice_image_paths(
+            invoice_id,
             invoice["image_path"]
         )
 
-        if image_path.exists():
-
-            st.image(
-                str(image_path),
-                caption="Original uploaded invoice",
-                width="stretch"
-            )
-
-        else:
+        if not image_paths:
 
             st.error(
                 "Original invoice image could not be found."
             )
+
+        for index, path_str in enumerate(image_paths, start=1):
+
+            image_path = Path(path_str)
+
+            if image_path.exists():
+
+                caption = (
+                    f"Page {index} of {len(image_paths)}"
+                    if len(image_paths) > 1
+                    else "Original uploaded invoice"
+                )
+
+                st.image(
+                    str(image_path),
+                    caption=caption,
+                    width="stretch"
+                )
+
+            else:
+
+                st.error(
+                    f"Page {index} could not be found."
+                )
 
     with col2:
 
@@ -1184,93 +1325,6 @@ def show_boss_invoice_detail(invoice_id):
             f"RM {invoice['total_amount']:,.2f}"
         )
 
-    st.divider()
-
-    with st.expander("Danger Zone"):
-
-        st.write(
-            "Deleting an invoice removes it from every list, report, "
-            "and dashboard total. The record itself is kept, so this "
-            "can be reversed later if needed, but not from within "
-            "the app."
-        )
-
-        confirm_key = f"confirm_delete_{invoice_id}"
-
-        if not st.session_state.get(confirm_key, False):
-
-            if st.button(
-                "Delete Invoice",
-                key=f"delete_invoice_{invoice_id}"
-            ):
-
-                st.session_state[confirm_key] = True
-                st.rerun()
-
-        else:
-
-            st.warning(
-                f"Delete invoice "
-                f"#{invoice['invoice_number'] or 'Unknown'}? "
-                "This will hide it everywhere in the system."
-            )
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-
-                if st.button(
-                    "Yes, delete this invoice",
-                    type="primary",
-                    key=f"confirm_delete_yes_{invoice_id}"
-                ):
-
-                    connection = get_connection()
-
-                    try:
-
-                        connection.execute(
-                            """
-                            UPDATE invoices
-                            SET is_deleted = 1
-                            WHERE invoice_id = ?
-                            """,
-                            (invoice_id,)
-                        )
-
-                        connection.commit()
-
-                    finally:
-
-                        connection.close()
-
-                    st.session_state[
-                        "invoice_deleted_message"
-                    ] = (
-                        f"Invoice "
-                        f"#{invoice['invoice_number'] or 'Unknown'} "
-                        f"deleted."
-                    )
-
-                    st.session_state.pop(confirm_key, None)
-
-                    st.session_state.pop(
-                        "selected_invoice_id",
-                        None
-                    )
-
-                    st.rerun()
-
-            with col2:
-
-                if st.button(
-                    "Cancel",
-                    key=f"confirm_delete_no_{invoice_id}"
-                ):
-
-                    st.session_state.pop(confirm_key, None)
-                    st.rerun()
-
 
 # ============================================================
 # BOSS: INVOICE MANAGEMENT
@@ -1279,12 +1333,6 @@ def show_boss_invoice_detail(invoice_id):
 def boss_invoice_management():
 
     st.title("Invoice Management")
-
-    if st.session_state.get("invoice_deleted_message"):
-
-        st.success(
-            st.session_state.pop("invoice_deleted_message")
-        )
 
     connection = get_connection()
 
@@ -1385,7 +1433,6 @@ def boss_invoice_management():
             ON invoices.supplier_id =
                suppliers.supplier_id
         WHERE 1 = 1
-            AND invoices.is_deleted = 0
     """
 
     parameters = []
@@ -1664,7 +1711,6 @@ def boss_supplier_management():
             LEFT JOIN invoices
                 ON suppliers.supplier_id =
                    invoices.supplier_id
-                AND invoices.is_deleted = 0
 
             WHERE suppliers.active = 1
 
@@ -1906,7 +1952,6 @@ def show_supplier_detail(supplier_id):
                 verification_status
             FROM invoices
             WHERE supplier_id = ?
-                AND is_deleted = 0
             ORDER BY invoice_date DESC,
                      invoice_id DESC
             """,
@@ -2133,7 +2178,6 @@ def boss_payment_management():
             JOIN suppliers
                 ON invoices.supplier_id =
                    suppliers.supplier_id
-            WHERE invoices.is_deleted = 0
             ORDER BY invoices.invoice_date DESC,
                      invoices.invoice_id DESC
             """
@@ -2253,7 +2297,6 @@ def boss_payment_management():
                 ON invoices.supplier_id =
                    suppliers.supplier_id
             WHERE invoices.invoice_id = ?
-                AND invoices.is_deleted = 0
             """,
             (selected_invoice_id,)
         ).fetchone()
@@ -2614,7 +2657,6 @@ def boss_reports():
                     0
                 ) AS total_outstanding
             FROM invoices
-            WHERE is_deleted = 0
             """
         ).fetchone()
 
@@ -2644,7 +2686,6 @@ def boss_reports():
             JOIN suppliers
                 ON invoices.supplier_id =
                    suppliers.supplier_id
-            WHERE invoices.is_deleted = 0
             ORDER BY invoices.invoice_date DESC,
                      invoices.invoice_id DESC
             """
@@ -2674,7 +2715,6 @@ def boss_reports():
             LEFT JOIN users
                 ON payments.recorded_by =
                    users.user_id
-            WHERE invoices.is_deleted = 0
             ORDER BY payments.payment_date DESC,
                      payments.payment_id DESC
             """
@@ -2715,7 +2755,6 @@ def boss_reports():
             LEFT JOIN invoices
                 ON suppliers.supplier_id =
                    invoices.supplier_id
-                AND invoices.is_deleted = 0
 
             WHERE suppliers.active = 1
 
@@ -3267,7 +3306,6 @@ def boss_dashboard():
                 """
                 SELECT COUNT(*) AS count
                 FROM invoices
-                WHERE is_deleted = 0
                 """
             ).fetchone()["count"]
 
@@ -3276,7 +3314,6 @@ def boss_dashboard():
                 SELECT COUNT(*) AS count
                 FROM invoices
                 WHERE status = 'Unpaid'
-                    AND is_deleted = 0
                 """
             ).fetchone()["count"]
 
@@ -3288,7 +3325,6 @@ def boss_dashboard():
                 ) AS total
                 FROM invoices
                 WHERE status != 'Paid'
-                    AND is_deleted = 0
                 """
             ).fetchone()["total"]
 

@@ -128,6 +128,29 @@ def create_tables():
     """)
 
     # =====================================================
+    # INVOICE PAGES
+    # (each row is one page image belonging to an invoice -
+    # a single-photo upload gets one row, a multi-page PDF
+    # gets one row per page)
+    # =====================================================
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS invoice_pages (
+            page_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            invoice_id INTEGER NOT NULL,
+
+            page_number INTEGER NOT NULL,
+
+            image_path TEXT NOT NULL,
+
+            FOREIGN KEY (invoice_id)
+                REFERENCES invoices(invoice_id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    # =====================================================
     # PAYMENTS
     # =====================================================
 
